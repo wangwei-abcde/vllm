@@ -17,7 +17,6 @@ the engine's native batch-queue path. See lwd_chunked_prefill_design.md
 
 from __future__ import annotations
 
-import copy
 import time
 from collections import deque
 from collections.abc import Callable
@@ -58,7 +57,6 @@ from vllm.v1.lwd_control.lwd_control_diag import LwdControlDiag
 from vllm.v1.request import RequestStatus
 
 if TYPE_CHECKING:
-    from vllm.config import VllmConfig
     from vllm.v1.request import Request
 
 LwdSendToCloud = Callable[[LwdEdgeToCloudMessage], None]
@@ -83,32 +81,20 @@ _LWD_FINISH_STATUS = {
 _LWD_MAX_PENDING_CHUNKS = 3
 
 
-def _lwd_without_prefix_caching(vllm_config: VllmConfig) -> VllmConfig:
-    """The scheduler's view of the config, with prefix caching off.
-
-    The edge holds no KV cache (no KV cache groups), so the KV cache manager
-    must not look up prefix hits: a hit would skip embedding blocks the edge
-    never computed. The engine keeps prefix caching on in its own config, so
-    it still builds the request block hasher whose hash chain the edge sends
-    to the cloud for cloud-side prefix hits.
-    """
-    scheduler_vllm_config = copy.copy(vllm_config)
-    scheduler_vllm_config.cache_config = copy.copy(vllm_config.cache_config)
-    scheduler_vllm_config.cache_config.enable_prefix_caching = False
-    return scheduler_vllm_config
-
-
 class LwdEdgeScheduler(LwdBaseScheduler):
     """Pure prefill scheduling semantics + control-plane egress
     (RangeNotify/seqno)."""
 
-    def __init__(self, *args, vllm_config: VllmConfig, **kwargs) -> None:
-        super().__init__(
-            *args, vllm_config=_lwd_without_prefix_caching(vllm_config), **kwargs
-        )
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
         # Injected by the engine once the cloud accepted the handshake.
         self.lwd_send_to_cloud: LwdSendToCloud | None = None
         self._lwd_seqno = 0
+        # Prefix caching: manager-level hits must stay off (the edge holds
+        # no KV cache -- a hit would skip embedding blocks never written);
+        # the config-level flag stays on so the engine still builds the
+        # block hash chain for cloud-side hits.
+        self.kv_cache_manager.enable_caching = False
         # Pending ledger (single account): seqno -> set of in-batch requests
         # whose result has not yet arrived. One seqno = one cloud-step
         # consumption unit; a request is removed from its batch once its
