@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
 """LWD control-plane diagnostics hub: on-the-spot switch reads, spec
 acceptance-rate observation, diagnostic-bypass predicates and payload
 extraction, debug instrumentation forwarding.

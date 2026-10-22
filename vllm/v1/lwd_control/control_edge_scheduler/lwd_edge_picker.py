@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
 """Pure functions for edge-side prefill batch assembly: resume-first +
 FCFS prefix + tail truncation (PD_mix is the only supported form; the
 single-request escape hatch for PD-disaggregated mode was removed along
