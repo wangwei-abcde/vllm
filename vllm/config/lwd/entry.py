@@ -69,5 +69,10 @@ class LwdConfig:
         return self.topology.instance(self.role, self.instance_id)
 
     @property
+    def is_edge(self) -> bool:
+        """True for the edge role (embed + unembed compute, zero decoder layers)."""
+        return self.role == "edge"
+
+    @property
     def connections(self) -> tuple[LwdDPConnection, ...]:
         return self.topology.connections(self.role, self.instance_id)
