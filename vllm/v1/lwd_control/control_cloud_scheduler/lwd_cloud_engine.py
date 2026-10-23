@@ -236,9 +236,28 @@ class LwdCloudEngineCore(LwdBaseEngineCore):
             )
 
             num_tokens = sum(item.num_tokens for item in items)
-            hint_req_rows = [
-                (it.request_id, it.offset + it.num_tokens) for it in items
+            # Two coordinate systems (cpu_offload contract, do NOT merge):
+            #   rows           = per-request row count IN THIS BATCH
+            #   prompt_offsets = per-request start WITHIN ITS OWN PROMPT
+            # (previous bug: req_rows carried absolute row numbers which
+            #  happened to match batch counts only for offset=0 chunks)
+            hint_req_ids = [it.request_id for it in items]
+            hint_rows = [it.num_tokens for it in items]
+            hint_prompt_offsets = [it.offset for it in items]
+            hint_prompt_lens = [
+                self._lwd_prompt_len.get(it.request_id, 0) for it in items
             ]
+            # cpu_offload protocol: skip hints with missing prompt_lens
+            # (RangeNotify before metadata = protocol violation)
+            if any(n <= 0 for n in hint_prompt_lens):
+                lwd_logger.error(
+                    "[LWD][pre-recv] HINT seqno=%d skipped: missing "
+                    "prompt_lens for %s",
+                    msg.seqno,
+                    [it.request_id for it in items
+                     if self._lwd_prompt_len.get(it.request_id, 0) <= 0],
+                )
+                return
             aux_rows = 0
             # Log before enqueueing: the worker comm thread can pick
             # the hint up within 0.5 ms; if the log came after the
@@ -251,7 +270,10 @@ class LwdCloudEngineCore(LwdBaseEngineCore):
                 time.monotonic(),
             )
             post_irecv_hint(make_recv_hint(
-                msg.seqno, num_tokens, aux_rows, req_rows=hint_req_rows))
+                msg.seqno, num_tokens, aux_rows,
+                req_ids=hint_req_ids, rows=hint_rows,
+                prompt_offsets=hint_prompt_offsets,
+                prompt_lens=hint_prompt_lens))
         elif isinstance(msg, LwdRequestNotify):
             request = self._lwd_build_request(msg)
             # Message v2: full-prompt mrope arrives once at admission - stash
@@ -260,6 +282,9 @@ class LwdCloudEngineCore(LwdBaseEngineCore):
             request.lwd_mrope_positions = msg.mrope_positions
             self._lwd_prompt_len[msg.request_id] = msg.num_prompt_tokens
             self._lwd_recv_rows.setdefault(msg.request_id, 0)
+            # Start clamped to 0 (no data on host yet): the native scheduler
+            # skips 0-cap requests; the drain grows the cap from arrivals.
+            request.lwd_window_cap = 0
             self.input_queue.put_nowait((EngineCoreRequestType.ADD, (request, 0)))
             lwd_logger.info(
                 "[LWD] request admitted req=%s prompt=%d",
@@ -379,7 +404,20 @@ class LwdCloudEngineCore(LwdBaseEngineCore):
         for req_id, arrived in per_req:
             self._lwd_recv_rows[req_id] = max(
                 self._lwd_recv_rows.get(req_id, 0), arrived)
-        # (hold-gate release removed: the scheduler's visible-set handles it)
+        # Mount lwd_window_cap on requests whose arrival < prompt_len: the
+        # native scheduler's min() respects it (the sole LWD scheduling
+        # constraint); at full arrival the cap is removed.
+        for req_id, recv in self._lwd_recv_rows.items():
+            request = self.scheduler.requests.get(req_id)
+            if request is None:
+                continue
+            prompt = self._lwd_prompt_len.get(req_id, 0)
+            if prompt and recv < prompt:
+                cap = recv - request.num_computed_tokens
+                request.lwd_window_cap = max(cap, 0)
+            else:
+                if hasattr(request, "lwd_window_cap"):
+                    request.lwd_window_cap = None
         lwd_logger.info(
             "[Lwd][pre-recv] DRAIN n=%d seqnos=%s advanced=%s ts=%.3f",
             len(items),

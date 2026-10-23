@@ -677,6 +677,8 @@ class Scheduler(SchedulerInterface):
             # above): bounds this request to the rows whose embeddings
             # have actually arrived on host. None for all non-LWD requests.
             lwd_window_cap = getattr(request, "lwd_window_cap", None)
+            if lwd_window_cap is not None and lwd_window_cap <= 0:
+                continue
             if lwd_window_cap is not None:
                 num_new_tokens = min(num_new_tokens, lwd_window_cap)
 
@@ -1101,6 +1103,9 @@ class Scheduler(SchedulerInterface):
                     # beyond its window. None for all other requests.
                     lwd_window_cap = getattr(request, "lwd_window_cap", None)
                     if lwd_window_cap is not None:
+                        if lwd_window_cap <= 0:
+                            req_index += 1
+                            continue
                         num_new_tokens = min(num_new_tokens, lwd_window_cap)
                     assert num_new_tokens > 0
 
